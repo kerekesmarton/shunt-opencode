@@ -30,5 +30,5 @@ if [ "$lines" -le "$MIN_LINES" ]; then
   exit 0
 fi
 
-echo "File is ${lines} lines (threshold: ${MIN_LINES}). Use the /bulk-reader skill to delegate this read to Muse Spark instead of reading it directly. If you need exact content for editing, re-read with an offset/limit for just the section you need." >&2
+echo "File is ${lines} lines (threshold: ${MIN_LINES}). Use the /bulk-reader skill to delegate this read to the shunt worker model instead of reading it directly. If you need exact content for editing, re-read with an offset/limit for just the section you need." >&2
 exit 2
