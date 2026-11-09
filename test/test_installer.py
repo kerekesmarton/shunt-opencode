@@ -35,7 +35,7 @@ class InstallerScenarios(unittest.TestCase):
                 'plugin/index.ts',
             ):
                 self.assertTrue((shunt / relative).is_file(), f'missing {relative}')
-                if relative.startswith(('hooks/', 'scripts/')) and 'lib/' not in relative:
+                if relative.startswith(('hooks/', 'scripts/')):
                     self.assertTrue(
                         os.access(shunt / relative, os.X_OK),
                         f'not executable: {relative}',
