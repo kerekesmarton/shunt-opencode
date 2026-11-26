@@ -17,37 +17,42 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.headers.get('Authorization') != authorization:
             self.send_error(401)
             return
-        if self.path.startswith('/session'):
+        route = self.path.split('?')[0].rstrip('/')
+        if route == '/api/info':
+            unhealthy_file = os.environ.get('SHUNT_TEST_FAKE_UNHEALTHY_PID_FILE')
+            if unhealthy_file and Path(unhealthy_file).exists() and Path(unhealthy_file).read_text() == str(os.getpid()):
+                self.send_error(503)
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'version': 'fake'}).encode())
+            return
+        if route == '/api/session':
             if os.environ.get('SHUNT_TEST_FAKE_NOT_READY'):
                 self.send_error(503)
                 return
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
-            self.wfile.write(b'[]')
+            self.wfile.write(b'{"data": []}')
             return
-        if self.path != '/global/health' and self.path != '/provider':
-            self.send_error(404)
-            return
-        unhealthy_file = os.environ.get('SHUNT_TEST_FAKE_UNHEALTHY_PID_FILE')
-        if unhealthy_file and Path(unhealthy_file).exists() and Path(unhealthy_file).read_text() == str(os.getpid()):
-            self.send_error(503)
-            return
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        if self.path == '/provider':
-            self.wfile.write(json.dumps({'all': [{'id': 'fake', 'models': {'m1': {}}}]}).encode())
-            return
-        self.wfile.write(json.dumps({'healthy': True}).encode())
+        self.send_error(404)
 
     def do_POST(self):
-        if self.path != '/shutdown':
-            self.send_error(404)
+        route = self.path.split('?')[0].rstrip('/')
+        if route in ('/api/session', '/api/session/shunt/model', '/api/session/shunt/prompt', '/api/experimental/session/shunt/wait'):
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(b'{"data": {"id": "ses_fake"}}')
             return
-        self.send_response(200)
-        self.end_headers()
-        threading.Thread(target=self.server.shutdown, daemon=True).start()
+        if route == '/shutdown':
+            self.send_response(200)
+            self.end_headers()
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
+        self.send_error(404)
 
     def log_message(self, format, *args):
         pass

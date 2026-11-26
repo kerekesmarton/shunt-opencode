@@ -16,10 +16,10 @@ WORKER = Path(os.environ.get(
 
 class MalformedHealthHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200)
+        self.send_response(503)
         self.send_header('Content-Type', 'application/json')
         self.end_headers()
-        self.wfile.write(b'[]')
+        self.wfile.write(b'{"healthy": false}')
 
     def log_message(self, format, *args):
         pass

@@ -5,7 +5,9 @@ import { argv } from 'process'
 
 const pluginModule = await import(new URL('../plugin/index.ts', import.meta.url).href)
 const plugin = pluginModule.default ?? pluginModule.ShuntPlugin
-const hooks = await plugin({})
+// The default export is a V2 plugin object with a V1 `server()` hook factory;
+// older installs exported a bare function. Support both shapes.
+const hooks = typeof plugin === 'function' ? await plugin({}) : await plugin.server()
 const before = hooks['tool.execute.before']
 
 const tool = argv[2]
