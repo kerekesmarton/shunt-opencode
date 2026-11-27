@@ -106,12 +106,22 @@ async function taskQuestion(ctx: any, sessionID: unknown): Promise<string> {
     const messages = await ctx.session.context({ sessionID })
     if (!Array.isArray(messages)) return generic
     for (const message of messages.slice().reverse()) {
-      const role = message?.info?.role ?? message?.role
+      // V2 messages carry {type, text}; V1 carried {info: {role}, parts}.
+      const role = message?.type ?? message?.info?.role ?? message?.role
       if (role !== 'user') continue
-      const parts = message?.parts ?? message?.info?.parts
-      const text = Array.isArray(parts)
-        ? parts.filter((part: any) => part?.type === 'text' && typeof part.text === 'string').map((part: any) => part.text).join('\n').trim()
-        : ''
+      let text: string = ''
+      if (typeof message?.text === 'string') {
+        text = message.text
+      } else {
+        const parts = message?.parts ?? message?.info?.parts
+        if (Array.isArray(parts)) {
+          text = parts
+            .filter((part: any) => part?.type === 'text' && typeof part.text === 'string')
+            .map((part: any) => part.text)
+            .join('\n')
+        }
+      }
+      text = text.trim()
       if (text) {
         return (
           `A coding agent is working on this task:\n<task>\n${text.slice(0, 4000)}\n</task>\n` +
@@ -217,6 +227,20 @@ function makeWrappedRead(ctx: any, root: string, original: any) {
     } catch { /* not a readable file: let the original read surface the error */ }
     if (!size || (size.lines <= minLines && size.bytes <= maxBytes)) {
       return originalExecute(input, context)
+    }
+    // Enforce the session's read permissions before touching the corpus
+    // server-side: this wrapper reads the file directly for delegation,
+    // which would otherwise bypass the permission model the original
+    // executor applies. A deny throws Tool.Error and propagates, matching
+    // how the built-in read refuses.
+    if (typeof ctx?.permission?.assert === 'function') {
+      await ctx.permission.assert({
+        sessionID: context?.sessionID,
+        ...(context?.agent ? { agent: context.agent } : {}),
+        source: { type: 'tool', messageID: context?.messageID, id: context?.id },
+        action: 'read',
+        resources: [absPath],
+      })
     }
     let question: string
     let summary: string

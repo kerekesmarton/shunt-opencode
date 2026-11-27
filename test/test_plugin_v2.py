@@ -129,11 +129,24 @@ class WrappedReadScenarios(unittest.TestCase):
         self.assertIn('1\tline 1', prompt)
         self.assertIn('Question:', prompt)
 
-    def test_given_an_oversized_read_when_a_task_is_present_then_the_delegation_serves_it(self):
+    def test_given_an_oversized_read_when_a_v2_task_is_present_then_the_delegation_serves_it(self):
         self.emit(
             {'type': 'text', 'text': '- line 12 uses alpha'},
             {'type': 'step-finish', 'reason': 'stop'},
         )
+        # V2 session.context returns messages shaped {type, text}.
+        task = [{'type': 'user', 'text': 'Fix the login bug'}]
+        outcome = self.drive('read', json.dumps({'path': str(self.big)}),
+                             env_extra={'SHUNT_TEST_SESSION_CONTEXT': json.dumps(task)})
+        self.assertTrue(outcome['delegated'], outcome)
+        self.assertIn('Fix the login bug', self.message_prompt())
+
+    def test_given_an_oversized_read_when_a_v1_task_is_present_then_the_delegation_serves_it(self):
+        self.emit(
+            {'type': 'text', 'text': '- line 12 uses alpha'},
+            {'type': 'step-finish', 'reason': 'stop'},
+        )
+        # V1 fallback: {info: {role}, parts}.
         task = [{'info': {'role': 'user'}, 'parts': [{'type': 'text', 'text': 'Fix the login bug'}]}]
         outcome = self.drive('read', json.dumps({'path': str(self.big)}),
                              env_extra={'SHUNT_TEST_SESSION_CONTEXT': json.dumps(task)})
@@ -184,6 +197,34 @@ class WrappedReadScenarios(unittest.TestCase):
         outcome = self.drive('read', json.dumps({'path': str(self.big)}),
                              env_extra={'SHUNT_ALLOW_FALLBACK': '1'})
         self.assertTrue(outcome['passthrough'], outcome)
+
+    def test_given_an_oversized_read_when_the_session_denies_read_then_no_delegation_and_no_read(self):
+        self.emit({'type': 'text', 'text': 'unused'})
+        outcome = self.drive('read', json.dumps({'path': str(self.big)}),
+                            env_extra={'SHUNT_TEST_DENY_READ': '1'})
+        self.assertFalse(outcome['ok'], outcome)
+        self.assertIn('Permission denied', outcome['error'])
+        # the denial must surface before any worker call: no corpus shipped
+        self.assertEqual(self.server.requests, [])
+        self.assertEqual(outcome['perm_asserts'], 1)
+
+    def test_given_an_oversized_read_when_permissions_allow_then_assert_ran_before_delegation(self):
+        self.emit(
+            {'type': 'text', 'text': '- summary'},
+            {'type': 'step-finish', 'reason': 'stop'},
+        )
+        outcome = self.drive('read', json.dumps({'path': str(self.big)}))
+        self.assertTrue(outcome['delegated'], outcome)
+        self.assertEqual(outcome['perm_asserts'], 1)
+
+    def test_given_a_small_file_when_read_is_denied_then_the_original_executor_handles_it(self):
+        # permission.assert only guards the delegation path; small files
+        # pass through to the original executor untouched.
+        self.emit({'type': 'text', 'text': 'unused'})
+        outcome = self.drive('read', json.dumps({'path': str(self.small)}),
+                             env_extra={'SHUNT_TEST_DENY_READ': '1'})
+        self.assertTrue(outcome['passthrough'], outcome)
+        self.assertEqual(outcome['perm_asserts'], 0)
 
     def test_given_a_slow_worker_when_the_timeout_expires_then_the_read_fails_closed(self):
         self.server.fail_next_message = True

@@ -19,9 +19,18 @@ const tools = {
   },
 }
 const hooks = {}
+const permAsserts = []
 const ctx = {
   app: { version: 'test' },
   location: { directory: cwd(), project: { directory: cwd(), id: 'test', canonical: cwd() } },
+  permission: {
+    assert: async (input) => {
+      permAsserts.push(input)
+      if (env.SHUNT_TEST_DENY_READ === '1') {
+        throw Object.assign(new Error('Permission denied: read'), { name: 'Tool.Error' })
+      }
+    },
+  },
   session: {
     get: async () => ({ location: { directory: cwd() } }),
     context: async () => JSON.parse(env.SHUNT_TEST_SESSION_CONTEXT ?? '[]'),
@@ -48,9 +57,10 @@ if (scenario === 'read') {
   try {
     const out = await wrappedRead(input, context)
     const content = typeof out?.content === 'string' ? out.content : JSON.stringify(out?.content ?? null)
-    result = { ok: true, delegated: content.startsWith('[shunt]'), passthrough: content.startsWith('RAW('), content }
+    result = { ok: true, delegated: content.startsWith('[shunt]'), passthrough: content.startsWith('RAW('), content,
+      perm_asserts: permAsserts.length }
   } catch (error) {
-    result = { ok: false, error: error?.message ?? String(error) }
+    result = { ok: false, error: error?.message ?? String(error), perm_asserts: permAsserts.length }
   }
 } else if (scenario === 'hook') {
   try {
