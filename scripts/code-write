@@ -1,8 +1,8 @@
 #!/bin/bash
-# Delegate boilerplate generation to Muse code-writer mode
+# Delegate boilerplate generation to the OpenCode worker code-writer mode
 # Usage: code-write --spec "write tests for UserService" --reference ref.test.ts --target out.test.ts
 
-. "$(cd "$(dirname "$0")" && pwd)/lib/muse.sh"
+. "$(cd "$(dirname "$0")" && pwd)/lib/opencode.sh"
 
 MODE_NAME="code-writer"
 

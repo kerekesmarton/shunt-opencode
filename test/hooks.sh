@@ -1,7 +1,7 @@
 #!/bin/bash
 # Checks the two PreToolUse hooks against a generated large and small file.
 # Needs jq. No network, no Muse.
-H="$(cd "$(dirname "$0")/../plugins/shunt-muse/hooks" && pwd)"
+H="$(cd "$(dirname "$0")/../hooks" && pwd)"
 d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
 seq 1 400 > "$d/big.txt"; seq 1 10 > "$d/small.txt"
 fail=0

@@ -1,108 +1,120 @@
-# shunt-muse
+# shunt-opencode
 
-Keep big files out of your coding agent's context. When Claude Code or Codex tries to read a large file in full, a hook stops it and points it at a skill that hands the files to a cheaper model (Muse Spark via `muse exec`). Only the short answer comes back into the session.
+Keep big files out of your OpenCode agent's context. On OpenCode 2.x a plugin wraps the built-in `read` tool: an oversized full read (no offset/limit) is delegated **automatically** to a cheaper worker model and only a labeled summary enters the session — no skill, script, or model choice required. Targeted reads (offset/limit) and small files pass through untouched. Bare `cat`/`head`/`tail` shell reads of large files are blocked. If the worker fails, the read fails closed with remediation instead of silently loading the file into your expensive model.
 
-This is a fork of Spotify's [shunt](https://github.com/spotify/portal-ai-plugins/tree/main/plugins/shunt). The original delegates to AiKA modes on a Spotify Portal instance. If you don't have Portal, this version does the same thing with the Muse CLI you already have installed.
+Fork lineage: Spotify's [shunt](https://github.com/spotify/portal-ai-plugins/tree/main/plugins/shunt) delegates to AiKA modes on a Portal instance; [shunt-muse](https://github.com/alexanderradahl/shunt-muse) did the same with the Muse CLI; this port delegates to a private, managed OpenCode worker. See [NOTICE](NOTICE) for what changed in each step.
 
 ## What it does
 
-- **Hooks** (`PreToolUse`) block a full `Read`, or a bare `cat`/`head`/`tail`/`less`/`more`, of any file over 350 lines. Reads with an offset or limit, piped commands and small files go through untouched.
-- **`bulk-read`** sends one or more files plus a question to Muse and prints the answer.
-- **`code-write`** sends a spec plus a reference file to Muse and writes the generated file (tests, config, stubs).
-- **Skills** (`bulk-reader`, `code-writer`) tell the agent when to call the scripts.
+- **V2 plugin** (`tool.execute.before` + `tool.transform` in `plugin/index.ts`): wraps the built-in `read` tool. A full read of a file over `SHUNT_MIN_LINES` (default 350 lines) or `SHUNT_MAX_BYTES` (default 131072) is delegated to the worker model automatically and returns a `[shunt]`-labeled summary. Reads with an offset or limit, and small files, pass through untouched. Bare `cat`/`head`/`tail`/`less`/`more` through `shell`/`bash` are blocked by the same hook the CLI wrappers use. `SHUNT_DISABLE=1` bypasses everything; `SHUNT_ALLOW_FALLBACK=1` reads oversized files directly when the worker fails (default is to fail closed with remediation).
+- **V1 hooks** (`server()` export): block-and-suggest, delegating to the same bash scripts — V1 has no tool-transform API.
+- **`bulk-read`** sends one or more files plus a question to the worker model and prints the answer.
+- **`code-write`** sends a spec plus a reference file to the worker model and writes the generated file (tests, config, stubs).
+- **Skills** (`bulk-reader`, `code-writer`, `shunt-worker`) tell the agent when to call the scripts and how to operate the worker.
 
 Every call is one shot. A follow-up question sends the files again, which costs nothing in your agent's context because they never enter it.
 
-## Numbers
+## How the worker call works
 
-One run on a 617-line test file: about 4,800 tokens went to Muse and roughly 300 came back, in 24 seconds at `low` effort. At the default `high`, a 1,055-line file took about 20 seconds and every cited line number was exact (`xhigh` gave the same answer in about 32 seconds). Spotify reports 82-94% savings with the original plugin on a 162K-line Java monorepo; I haven't reproduced that here.
+`scripts/lib/worker.py` manages a private OpenCode server on this machine (OpenCode 2.x API):
 
-## Requirements
+1. `ensure` starts `opencode serve` on `127.0.0.1` (random port) as a background process group, or reuses the running one. Startup is **isolated**: private `XDG_CONFIG/DATA/CACHE/STATE` directories and an empty workspace, `permission: {"*": "deny"}` plus a tools-denied `shunt-worker` agent. Liveness is probed via the V2 `GET /api/info`; the legacy `/global/health` path serves the web UI in V2.
+2. The worker inherits `OPENCODE_CONFIG_DIR` **and** the global config's provider keys (V1 `provider`, V2 `providers`) so the company OpenCode distribution's plugins (ken) load and supply the OpenRouter provider credentials and `~…-latest` model groups. Credentials are resolved by OpenCode itself — they never appear in arguments, environment dumps, or this repo.
+3. `ensure` only returns after the workspace instance answers authenticated requests (`GET /api/session?directory=…`).
+4. Delegations drive the V2 API directly: `POST /api/session`, `POST /api/session/{id}/model` (worker model + optional variant), `POST /api/session/{id}/prompt` (instructions and corpus inlined as one text part), `POST /api/experimental/session/{id}/wait`, then read the last assistant message; only a message with content, a `finish`, and non-empty text passes (any error part is rejected).
 
-- Muse Code (`muse`) with `muse exec` working headless
-- `jq` and `perl` (both ship with macOS)
-- Claude Code with plugin support, and/or Codex CLI with hooks enabled
+The transport uses the server API rather than `opencode run --attach`: in 1.18.34 the CLI attach path can exit before the event stream finishes, which made success indistinguishable from a truncated failure. The API returns the finished message in one synchronous call, which is what the fail-closed response parser already expects.
 
-## Install in Claude Code
+## Install
 
 ```sh
-claude plugin marketplace add alexanderradahl/shunt-muse
-claude plugin install shunt-muse@muse-shunt
+bash install.sh
 ```
 
-Start a new session. The skills show up as `shunt-muse:bulk-reader` and `shunt-muse:code-writer`.
-
-## Install in Codex
-
-Clone the repo somewhere stable, then add the Bash hook to `~/.codex/hooks.json`:
+This copies `hooks/`, `scripts/` and `plugin/` to `~/.local/share/shunt-opencode`, installs the three skills into `~/.config/opencode/skills/` (rewriting `${SHUNT_ROOT}` to the install path), and prints a snippet. Merge it into your `opencode.json` (global: `~/.config/opencode/opencode.json`):
 
 ```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash|shell|exec_command|local_shell",
-        "hooks": [
-          { "type": "command", "command": "/path/to/shunt-muse/plugins/shunt-muse/hooks/check-bash-read", "timeout": 10 }
-        ]
-      }
-    ]
-  }
-}
+{ "plugin": ["/Users/you/.local/share/shunt-opencode/plugin"] }
 ```
 
-Copy the two skills into `~/.codex/skills/` and replace `${CLAUDE_PLUGIN_ROOT}` with the plugin path:
+On OpenCode 2.x use the `plugins` key (the directory form), which loads the plugin entrypoint automatically; on 1.x use `plugin` pointing at `plugin/index.ts`. Config changes apply without a restart.
 
-```sh
-P=/path/to/shunt-muse/plugins/shunt-muse
-for s in bulk-reader code-writer; do
-  mkdir -p ~/.codex/skills/$s
-  sed "s#\${CLAUDE_PLUGIN_ROOT}#$P#g" $P/skills/$s/SKILL.md > ~/.codex/skills/$s/SKILL.md
-done
-```
+Start a new OpenCode session. The skills show up as `bulk-reader`, `code-writer` and `shunt-worker`, and oversized full reads start coming back as worker summaries.
 
-Codex may ask you to approve the new hook the first time it runs. If your Codex sandbox has network access turned off, `bulk-read` can't reach Muse from inside it.
+The repo also loads in-place without installing: point the plugin entry at `/path/to/shunt-opencode/plugin`. The plugin resolves its hooks from `SHUNT_ROOT` if set, else relative to its own location.
 
 ## Configuration
 
-Environment variables:
-
 | Variable | Default | What it does |
 | --- | --- | --- |
-| `SHUNT_MIN_LINES` | `350` | Files longer than this get blocked |
-| `SHUNT_MUSE_MODEL` | `muse-spark-1.3-contributor` | Model passed to `muse exec --model` |
-| `SHUNT_MUSE_EFFORT` | `high` | `--reasoning-effort`; `low` is faster, `xhigh` slower with no gain in my tests |
-| `SHUNT_TIMEOUT_SECONDS` | `300` | Kill a Muse call after this long |
+| `SHUNT_MIN_LINES` | `350` | Files longer than this get delegated |
+| `SHUNT_MAX_BYTES` | `131072` | Files bigger than this get delegated (long lines flood context even under the line cap) |
+| `SHUNT_OPENCODE_MODEL` | — | **Required.** `provider/model` delegated to, e.g. `openrouter/~z-ai/glm-flash-latest` |
+| `SHUNT_OPENCODE_VARIANT` | unset | Model variant (provider-specific reasoning effort) |
+| `SHUNT_DISABLE` | unset | `1` disables all interception (wrapper passes through, hooks do not run) |
+| `SHUNT_ALLOW_FALLBACK` | unset | `1` reads oversized files directly when the worker fails; default fails closed with remediation |
+| `SHUNT_OPENCODE_BIN` | `opencode` | Binary used to start the managed worker |
+| `SHUNT_OPENCODE_SERVER` | unset | Use an already-running OpenCode server instead of the managed worker; health-checked first, its lifecycle is never touched |
+| `OPENCODE_SERVER_PASSWORD` / `OPENCODE_SERVER_USERNAME` | — | Credentials for that external server |
+| `SHUNT_OPENCODE_DIR` | worker workspace | Directory used as the workspace when attaching to an external server |
+| `SHUNT_TIMEOUT_SECONDS` | `300` | Kill a delegation after this long |
 | `SHUNT_MAX_PAYLOAD_BYTES` | `600000` | Refuse requests bigger than this; split them instead |
-| `SHUNT_MUSE_BIN` | `muse` | Path to the Muse binary |
+| `SHUNT_CATALOG_TIMEOUT_SECONDS` | `120` | How long `ensure` waits for the worker to become ready |
+| `SHUNT_STATE_DIR` | `~/.local/state/shunt-opencode` | Where worker state, logs and the private workspace live |
 
-## How the Muse call works
+`SHUNT_MUSE_*` variables from the previous fork are gone.
 
-`scripts/lib/muse.sh` writes the mode instructions and the files into a prompt file and runs:
+## Server lifecycle
 
 ```sh
-muse exec --prompt-file <prompt> --model "$SHUNT_MUSE_MODEL" \
-  --reasoning-effort "$SHUNT_MUSE_EFFORT" --max-model-steps 1 \
-  --workspace <empty temp dir> --preset native-basic \
-  --no-foreign-personal-context --disable-web-tools
+~/.local/share/shunt-opencode/scripts/lib/worker.py ensure   # start or reuse; prints the URL
+~/.local/share/shunt-opencode/scripts/lib/worker.py stop    # stop it and remove its state
 ```
 
-Everything Muse needs is in the prompt, so one model step is enough and the run skips workspace skills, your Claude/Codex skills and web tools. Muse still adds about 20k tokens of its own system prompt and user skills per call; there is no flag to turn that off. At contributor pricing that is about $0.002 per call.
+- `ensure` is idempotent and safe to run concurrently; it prints exactly one URL.
+- The worker keeps running between delegations. Run `stop` when done with heavy shunt usage or before switching `SHUNT_OPENCODE_MODEL`.
+- A running-but-unhealthy worker is stopped and restarted by `ensure`.
+- Corrupted or unparsable state (`worker.json`) fails closed: shunt refuses to delete it and asks you to inspect and remove `SHUNT_STATE_DIR/worker.json` explicitly. Never hand-edit state to make a command pass.
+- `stop` verifies process-group ownership and waits for actual exit (SIGTERM, then SIGKILL) before removing state.
+- With `SHUNT_OPENCODE_SERVER` set, shunt only attaches; it never starts, stops or restarts that server.
 
-Your files go to whichever provider Muse is configured for. Check that your tier's data terms fit what you're sending.
+## Authentication and credentials
+
+- Each managed worker generates a random password at start; every endpoint (including `/global/health`) requires HTTP basic auth, and the server binds to loopback only.
+- `worker.json` (contains the password) and `worker.log` are created `0600` in `SHUNT_STATE_DIR`.
+- Provider credentials come from the inherited company plugin dir and, when present, a private symlink to `~/.local/share/opencode/auth.json` inside the worker's data dir. Keys are never passed as arguments and never logged. If no credential source exists, `invoke` fails with a pointer to `opencode providers login` instead of a confusing model error.
+
+## Data handling
+
+- File contents are inlined into the prompt and sent through the configured provider (OpenRouter via the company setup). Check that your tier's data terms fit what you're sending.
+- The worker's own logs (`SHUNT_STATE_DIR/worker.log`, `…/data/opencode/log/`) may contain prompt-derived data.
+- Delegation answers are printed to stdout and, for `code-write`, written to `--target` after stripping Markdown fences.
 
 ## What it won't delegate
 
-Same rules as the original: debugging, editing (the agent needs exact text, so it reads the section it needs with offset/limit) and architecture calls stay with your main model. Only bulk reading and predictable boilerplate go to Muse.
+Same rules as upstream: debugging, editing (the agent needs exact text, so it reads the section it needs with offset/limit) and architecture calls stay with your main model. Only bulk reading and predictable boilerplate go to the worker.
+
+## Numbers
+
+Measured on this port, same task with and without the wrapper (a real headless OpenCode 2.x session reading a 400-line file; from the recorded cost in the local session databases):
+
+| | Main session input | Main cost | Worker cost | Total |
+| --- | --- | --- | --- | --- |
+| Without shunt (read passes through) | 78,667 tok | $0.0796 | — | $0.0796 |
+| With shunt (auto-delegated) | 2,227 tok | $0.0047 | $0.0002 | **$0.0049** |
+
+~94% on that run; savings scale with file size (Spotify reports 82–94% on large files). Latency: the wrapped read returns in ~20s wall clock (one worker round trip). Spotify's context-token figures are estimates (`chars/4`), not billed cost — these numbers are recorded provider cost.
 
 ## Tests
 
 ```sh
-test/hooks.sh
+python3 -m unittest discover -s test -p 'test_*.py'   # offline: hooks, plugin wrapper, transport, lifecycle, installer
+bash test/hooks.sh                                     # inherited hook checks (needs jq)
+SHUNT_RUN_OPENCODE_SMOKE=1 python3 -m unittest discover -s test -p 'test_worker_opencode_smoke.py'   # real local binary, no inference
 ```
 
-Checks both hooks against generated files. No network needed.
+For a provider-backed live test (real OpenRouter traffic, real cost), point `SHUNT_OPENCODE_MODEL` at a ken model group and run `scripts/bulk-read` once.
 
 ## License
 
-Apache 2.0, same as upstream. See [NOTICE](NOTICE) for what changed from Spotify's version.
+Apache 2.0, same as upstream. See [NOTICE](NOTICE) for the changes from Spotify's version and from shunt-muse.

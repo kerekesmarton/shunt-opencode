@@ -34,7 +34,7 @@ fi
 
 lines=$(wc -l < "$file_path" 2>/dev/null | tr -d ' ' || echo "0")
 if [ "$lines" -gt "$MIN_LINES" ]; then
-  echo "File is ${lines} lines (threshold: ${MIN_LINES}). Use the /bulk-reader skill to delegate this read to Muse Spark instead of cat/head/tail." >&2
+  echo "File is ${lines} lines (threshold: ${MIN_LINES}). Use the /bulk-reader skill to delegate this read to the shunt worker model instead of cat/head/tail." >&2
   exit 2
 else
   exit 0

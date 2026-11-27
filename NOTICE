@@ -5,7 +5,7 @@ This product is a modified version of "shunt" from spotify/portal-ai-plugins
 (https://github.com/spotify/portal-ai-plugins, commit 3c24ca3), licensed under
 the Apache License, Version 2.0.
 
-Changes from upstream:
+Changes from upstream (shunt-muse):
 - scripts/lib/aika.sh (Portal CLI / AiKA transport) replaced by
   scripts/lib/muse.sh, which runs one headless `muse exec` turn.
 - The bulk-reader and code-writer mode instructions now travel in the prompt.
@@ -14,3 +14,31 @@ Changes from upstream:
 - check-bash-read accepts a shell command given as an argv array.
 - bulk-read numbers each line in the prompt, so cited line numbers are exact.
 - Skill and hook text now points at Muse instead of AiKA.
+
+Changes for the OpenCode 2.x port:
+- plugin/index.ts is a dual V1/V2 default export. V2 `setup()` wraps the
+  built-in `read` tool via `ctx.tool.transform`, so an oversized full read is
+  delegated automatically to the worker and only a labeled summary returns;
+  `SHUNT_DISABLE` / `SHUNT_ALLOW_FALLBACK` control bypass and fallback, and
+  `SHUNT_MAX_BYTES` (128 KiB default) complements the line threshold. V1
+  keeps the block-and-suggest `server()` hooks.
+- scripts/lib/worker.py targets the OpenCode 2.x API: liveness via
+  GET /api/info (the legacy /global/health path serves the web UI in V2),
+  delegation via POST /api/session -> /model -> /prompt ->
+  /api/experimental/session/{id}/wait -> read the last assistant message
+  (content + finish + non-empty text required, error parts rejected).
+- Provider inheritance now covers both config generations (V1 `provider`,
+  V2 `providers`), so the isolated worker receives the company provider
+  credentials and model groups.
+- Claude Code / Codex hook wiring replaced by plugin/index.ts, an OpenCode 1.x
+  plugin whose tool.execute.before hook calls the same two bash scripts and
+  blocks by throwing the hook's stderr.
+- scripts/lib/muse.sh replaced by scripts/lib/opencode.sh delegating to
+  scripts/lib/worker.py, which manages a private, isolated `opencode serve`
+  worker and calls its HTTP API directly (the CLI --attach path can exit
+  before the event stream finishes in 1.18.34).
+- Distribution via install.sh (no marketplace manifest in OpenCode 1.x):
+  runtime under ~/.local/share/shunt-opencode, skills under
+  ~/.config/opencode/skills with ${SHUNT_ROOT} rewritten.
+- SHUNT_MUSE_* configuration replaced by the SHUNT_OPENCODE_* variables
+  documented in the README.
